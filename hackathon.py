@@ -17,19 +17,17 @@ from pybrain.supervised.trainers import BackpropTrainer
 
 ### ИМПОРТы для работы ВЕБСОКЕТОВ #####################
 
-import websocket
-import thread
-import time
-
+from websocket import *
+from threading import Thread
 
 # глобальные переменные
 root = Tk.Tk()
-ser = serial.Serial("/dev/ttyUSB0")
 datafile = "eeg.dat"
 buf = []
-ref = 0
+ref = 0;
 FSM_state = 0  # [0 - "education", 1 - "work"]
 CMD = 0  # [0 - "left", 1 - "right"]
+run_state = False  # run/stop state
 # массив FiFo
 valuechannel1 = deque([])
 valuechannel2 = deque([])
@@ -39,14 +37,18 @@ education = []
 # Нейронная сеть
 net = buildNetwork(64 * 3, 20, 6, 2, bias=True, hiddenclass=SigmoidLayer)
 
+# режим работы
+# state = 1 	#Данные поступают из электроэнцефалографа
+state = 0  # Данные поступают из файла datafile
+
+if state == 1:
+    ser = serial.Serial("/dev/ttyUSB0")
+
 # Сокеты
-#
-#
-#
-#######################################################
 
 ws = 0
 pack_to_serv = []
+
 
 def on_message(ws, message):
     # получаем состояние от сервера
@@ -69,12 +71,13 @@ def on_close(ws):
 def on_open(ws):
     global FSM_state
     modes = ["FIRST", "SECOND", "err_mode_type"]
-
+    print 111111
     def run(*args):
+        print 222222
         global pack_to_serv
         while True:
-            # каждые 100ms
-            time.sleep(0.1)
+            # каждые 2000ms
+            time.sleep(2)
             mode_neuro = modes[FSM_state]
             s = ""
             for i in range(0, len(pack_to_serv)):
@@ -85,16 +88,18 @@ def on_open(ws):
         time.sleep(1)
         ws.close()
         print("thread terminating...")
-
-    thread.start_new_thread(run, ())
-
-
-#######################################################
+    a = Thread(target=run)
+    a.start() 
 
 
-# режим работы
-# state = 1 	#Данные поступают из электроэнцефалографа
-state = 0  # Данные поступают из файла datafile
+# Инициализация Socket
+def connection():
+    enableTrace(True)
+    ws = WebSocketApp("ws://node-ws-server-neuro.eu-gb.mybluemix.net/", on_message=on_message, on_error=on_error,
+                      on_close=on_close)
+    ws.on_open = on_open
+    ws.run_forever()
+    return
 
 
 # преобразование данных
@@ -254,7 +259,6 @@ def buf_read(count):
     global ref
     res = ""
     for i in range(count):
-        # res.append(buf[ref]);
         res += buf[ref];
         ref = (ref + 1) % len(buf)
         time.sleep(0.000001)
@@ -282,6 +286,12 @@ def receive_data_from_eeg():
 
     # wait 100 ms
     time.sleep(0.1)
+
+    # Clear all buffers
+    if state:
+        ser.flushInput()
+        ser.flushOutput()
+
     begin_time = time.time()
     buffer_lst = []
     learnData = []
@@ -337,11 +347,8 @@ def receive_data_from_eeg():
                         print "__________________"
                         print learnData
                         print "__________________"
-                        print "time = ", my_time
-                        print "counter = ", counter
-                        print "length = ", len(valuechannel1)
-                        print "__________________"
                         counter = 0
+                        background_image = Tk.PhotoImage(file="right.png")
                         time.sleep(0.5)  # Задержка 500 мс
                         begin_time = time.time()
                         break_flag = True
@@ -350,11 +357,11 @@ def receive_data_from_eeg():
 def constructPerceptron(name, numNeurons):
     """Возвращает необученную сеть
 
-	Аргументы:
-	name -- имя сети, строка
-	numNeurons -- число нейронов в каждом слое, список из целых чисел
+    Аргументы:
+    name -- имя сети, строка
+    numNeurons -- число нейронов в каждом слое, список из целых чисел
 
-	"""
+    """
     # Создаём сеть
     net = FeedForwardNetwork(name)
     # Создаём слои и добавляем их в сеть
@@ -366,20 +373,20 @@ def constructPerceptron(name, numNeurons):
             newLayer = LinearLayer(val, 'input')
             net.addInputModule(newLayer)
             prevLayer = newLayer
-        # Если слой выходной, он линейный
+        # Если слой выходной, он линейный    
         elif (i == len(numNeurons) - 1):
             newLayer = LinearLayer(val, 'output')
             net.addOutputModule(newLayer)
-        # Иначе - слой сигмоидный
+        # Иначе - слой сигмоидный   
         else:
             newLayer = SigmoidLayer(val, 'hidden_' + str(i))
             net.addModule(newLayer)
-        # Если слой не входной, создаём связь между новым и предыдущим слоями
+            # Если слой не входной, создаём связь между новым и предыдущим слоями
         if (i > 0):
             conn = FullConnection(prevLayer, newLayer, 'conn_' + str(i))
             net.addConnection(conn)
             prevLayer = newLayer
-    # Готовим сеть к активации, упорядочивая её внутреннюю структуру
+    # Готовим сеть к активации, упорядочивая её внутреннюю структуру        
     net.sortModules()
     # Готово
     return net
@@ -388,11 +395,11 @@ def constructPerceptron(name, numNeurons):
 def constructDataset(name, learnData):
     """Возвращает обучающую выборку в формате PyBrain
 
-	Аргументы:
-	name -- имя набора данных, строка
-	learnData -- данные для обучения: список кортежей типа "входные признаки - выходной вектор"
+    Аргументы:
+    name -- имя набора данных, строка
+    learnData -- данные для обучения: список кортежей типа "входные признаки - выходной вектор"
 
-	"""
+    """
     # Вычисляем размерность входных данных
     dimIn = len(learnData[0][0])
     dimOut = len(learnData[0][1])
@@ -405,11 +412,11 @@ def constructDataset(name, learnData):
 def trainNetwork(net, trainData):
     """Возвращает сеть, прошедшую 1 эпоху обучения, и оценку ошибки
 
-	Аргументы:
-	net - нейронная сеть, PyBrain network
-	trainData -- обучающий набор данных, PyBrain dataset
+    Аргументы:
+    net - нейронная сеть, PyBrain network
+    trainData -- обучающий набор данных, PyBrain dataset
 
-	"""
+    """
     # Трейнер для обучения с учителем
     trainer = BackpropTrainer(net, trainData)
     # Запускаем трейнер на 1 эпоху и запоминаем оценку ошибки
@@ -420,22 +427,13 @@ def trainNetwork(net, trainData):
 # Обработка после кноки start
 def lets_start():
     global FSM_state
+    global CMD
     global root
     global education
 
-    #
-    #	Инициализация Socket
-    #
-    #############################################################################
-    websocket.enableTrace(True)
-    global ws
-    ws = websocket.WebSocketApp("ws://node-ws-server-neuro.eu-gb.mybluemix.net/",
-                                on_message=on_message,
-                                on_error=on_error,
-                                on_close=on_close)
-    ws.on_open = on_open
-    ws.run_forever()
-    #############################################################################
+    # Ждем старта
+    while not run_state:
+        time.sleep(0.1)
 
     # Работа с последовательном портом и файлом
     if state:
@@ -452,13 +450,6 @@ def lets_start():
     while True:  # Infinite loop
 
         if FSM_state == 0:  # Education
-
-
-            #
-            # Посылаем состояние обучения (FIRST)
-            #
-
-
             # show image
             background_image = Tk.PhotoImage(file="edu_left.png")
             background_label = Tk.Label(root, image=background_image)
@@ -478,7 +469,7 @@ def lets_start():
             root.update()
             time.sleep(3)
 
-            for i in range(5):
+            for i in range(10):
                 # show image
                 background_image = Tk.PhotoImage(file="left.png")
                 background_label = Tk.Label(root, image=background_image)
@@ -512,6 +503,7 @@ def lets_start():
                 # Start educate incorrect left
                 #
                 #
+
                 education.append((learnData, [0, 0]))
 
                 # show image
@@ -542,7 +534,7 @@ def lets_start():
             root.update()
             time.sleep(3)
 
-            for i in range(2):
+            for i in range(10):
                 # show image
                 background_image = Tk.PhotoImage(file="right.png")
                 background_label = Tk.Label(root, image=background_image)
@@ -590,7 +582,7 @@ def lets_start():
                 time.sleep(3)
 
             # Формирование обучающей выборки
-            print education
+            # print education
             # Данные для обучения data поступают от ЭЭГ в описанном выше формате - списке обучающих пар
             ds = constructDataset('data', education)
             # Запуск 1 полной эпохи обучения
@@ -607,17 +599,9 @@ def lets_start():
 
 
         else:  # Work
-
-
-            #
-            # Посылаем состояние работы (SECOND)
-            #
-
-            if FSM_state == 1:
-                CMD = 0
+            if CMD == 1:
                 background_image = Tk.PhotoImage(file="left.png")
             else:
-                CMD = 1
                 background_image = Tk.PhotoImage(file="right.png")
             background_label = Tk.Label(root, image=background_image)
             background_label.place(x=0, y=0, relwidth=1, relheight=1)
@@ -627,19 +611,28 @@ def lets_start():
 
             receive_data_from_eeg()
 
-            # Активизируем сеть! На вход подаем список из 64*3 чисел - вектор входных признаков
-            print(trained_net.activate(learnData))
-            print "__________________"
+            # Активизируем сеть! На вход подаем список из 64 чисел - вектор входных признаков
+            recognition = trained_net.activate(learnData)
+            print recognition
+            if recognition[0] > recognition[1]:
+                print "<=="
+            else:
+                print "==>"
 
-            #
-            # Посылаем данные на график и читаем состояние слайдера
-            #
-            global pack_to_serv
-            for i in range(len(learnData)):
-                pack_to_serv[i] = learnData[i]
+            background_image = Tk.PhotoImage(file="work.png")
+            background_label = Tk.Label(root, image=background_image)
+            background_label.place(x=0, y=0, relwidth=1, relheight=1)
+            root.wm_geometry("1000x650+20+40")
+            root.title('Go read your brain')
+            root.update()
+            FSM_state = 1  # Work, cmd = left
+            time.sleep(3)
+            if CMD == 1:
+                CMD = 0
+            else:
+                CMD = 1
 
         if FSM_state == 1:
-            # что такое состояние 2 ???
             FSM_state = 2
         else:
             FSM_state = 1
@@ -647,12 +640,24 @@ def lets_start():
     ser.close()
 
 
+# Изменение состояния
+def go():
+    global run_state
+    run_state = True
+
+
+# Стартуем сокет
+t = Thread(target=connection)
+t.start()
+m = Thread(target=lets_start)
+m.start()
+
 # Интерфейс
 background_image = Tk.PhotoImage(file="start.png")
 background_label = Tk.Label(root, image=background_image)
 background_label.place(x=0, y=0, relwidth=1, relheight=1)
 root.wm_geometry("1000x650+20+40")
 root.title('Go read your brain')
-startButton = Tk.Button(root, text="start", command=lets_start)
+startButton = Tk.Button(root, text="start", command=go)
 startButton.pack()
 root.mainloop()
